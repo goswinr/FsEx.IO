@@ -9,8 +9,7 @@ open System.Collections.Generic
 
 /// FsEx.IO  I/O utilities
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>] //need this so doesn't hide IO namespace in C# assemblies
-module IO = 
-   
+module IO =    
 
     type FileNotFoundException with
         /// Raise FileNotFoundException with F# printf string formatting
@@ -152,6 +151,32 @@ module IO =
         let writeAllLines (path:string) (contentLines:seq<string>) = 
             IO.File.WriteAllLines(path,contentLines)
 
+    module internal Help = 
+        open System.Collections.Generic
+        open System.IO
+
+        let maxCharsInString = 5000
+
+        /// If the input string is longer than maxChars + 20 then
+        /// it returns the input string trimmed to maxChars, a count of skipped characters and the last 6 characters (all enclosed in double quotes ")
+        /// e.g. "abcde[..20 more Chars..]xyz"
+        /// Else, if the input string is less than maxChars + 20, it is still returned in full (enclosed in double quotes ").    
+        let truncateString (stringToTrim:string) = 
+            if isNull stringToTrim then "-null string-" // add too, just in case this gets called externally
+            elif stringToTrim.Length <= maxCharsInString + 20 then sprintf "\"%s\""stringToTrim
+            else
+                let len   = stringToTrim.Length
+                let st    = stringToTrim.Substring(0, maxCharsInString)
+                let last20 = stringToTrim.Substring(len-21)
+                sprintf "\"%s[<< ... %d more chars ... >>]%s\"" st (len - maxCharsInString - 20) last20
+
+        
+        let normalizePath path =  //https://stackoverflow.com/questions/1266674
+            Path.GetFullPath(Uri(path).LocalPath).ToUpperInvariant()
+        
+        let uniqueFilesEnsurer = HashSet<string>()
+        
+    
     /// Reads and Writes with Lock,
     /// Optionally only once after a delay in which it might be called several times
     /// Uses Text.Encoding.UTF8
@@ -162,6 +187,12 @@ module IO =
         let counter = ref 0L // for atomic writing back to file
 
         let lockObj = new Object()       
+        do
+            if Help.uniqueFilesEnsurer.Contains(Help.normalizePath path) then
+                errorLogger(sprintf "FsEx.Wpf.SaveReadWriter: path '%s' is used already. Reads and Writes are not threadsafe anymore." path)            
+            else
+                Help.uniqueFilesEnsurer.Add(Help.normalizePath path) |> ignore
+
 
         /// Returns true if file to write to exists.
         member this.FileExists = IO.File.Exists(path)
@@ -220,7 +251,7 @@ module IO =
                 lock lockObj (fun () -> // lock is using Monitor class : https://github.com/dotnet/fsharp/blob/6d91b3759affe3320e48f12becbbbca493574b22/src/fsharp/FSharp.Core/prim-types.fs#L4793
                     try  IO.File.WriteAllText(path,text, Text.Encoding.UTF8)
                     // try & with is needed because exceptions on thread-pool cannot be caught otherwise !!
-                    with ex ->  errorLogger(sprintf "FsEx.IO.SaveWriter.WriteAsync failed with: %A \r\n while writing to %s:\r\n%A" ex path (NiceFormat.stringTruncated 5000 text)) 
+                    with ex ->  errorLogger(sprintf "FsEx.IO.SaveWriter.WriteAsync failed with: %A \r\n while writing to %s:\r\n%s" ex path (Help.truncateString text)) 
                     )
                 } |> Async.Start
 
